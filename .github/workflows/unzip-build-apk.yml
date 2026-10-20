@@ -33,8 +33,6 @@ jobs:
           mkdir -p extracted
           unzip -oq "$ZIP_FILE" -d extracted
 
-          echo "ZIP extracted successfully."
-
       - name: Locate Android Project
         shell: bash
         run: |
@@ -49,7 +47,7 @@ jobs:
             exit 1
           fi
 
-          PROJECT_DIR="$(dirname "$SETTINGS_FILE")"
+          PROJECT_DIR=$(dirname "$SETTINGS_FILE")
 
           if [ ! -f "$PROJECT_DIR/app/build.gradle.kts" ] && \
              [ ! -f "$PROJECT_DIR/app/build.gradle" ]; then
@@ -66,58 +64,39 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Set Up Android SDK
-        uses: android-actions/setup-android@v3
-        with:
-          cmdline-tools-version: 12266719
+      - name: Verify Android SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ ! -x "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" ]; then
+            echo "ERROR: sdkmanager not found at expected path."
+            find "$ANDROID_HOME/cmdline-tools" -maxdepth 3 \
+              -name sdkmanager -type f 2>/dev/null || true
+            exit 1
+          fi
+
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --version
 
       - name: Install Android SDK Packages
         shell: bash
         run: |
           set -euo pipefail
 
-          SDKMANAGER=$(find "$ANDROID_HOME/cmdline-tools" \
-            -type f -name sdkmanager | head -n 1)
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
 
-          if [ -z "$SDKMANAGER" ]; then
-            echo "ERROR: sdkmanager not found."
-            exit 1
-          fi
-
-          yes | "$SDKMANAGER" \
-            --sdk_root="$ANDROID_HOME" --licenses || true
+          yes | "$SDKMANAGER" --sdk_root="$ANDROID_HOME" \
+            --licenses || true
 
           "$SDKMANAGER" --sdk_root="$ANDROID_HOME" \
             "platform-tools" \
             "platforms;android-35" \
             "build-tools;35.0.0"
 
-      - name: Detect Gradle Version
-        shell: bash
-        working-directory: ${{ env.PROJECT_DIR }}
-        run: |
-          set -euo pipefail
-
-          VERSION=""
-
-          if [ -f "gradle/wrapper/gradle-wrapper.properties" ]; then
-            VERSION=$(grep -oE 'gradle-[0-9]+\.[0-9]+(\.[0-9]+)?(-[a-zA-Z0-9.-]+)?-(bin|all)\.zip' \
-              gradle/wrapper/gradle-wrapper.properties \
-              | head -n 1 | sed -E 's/^gradle-//; s/-(bin|all)\.zip$//' || true)
-          fi
-
-          if [ -z "$VERSION" ]; then
-            VERSION="8.13"
-            echo "No wrapper version found; using Gradle $VERSION."
-          fi
-
-          echo "GRADLE_VERSION=$VERSION" >> "$GITHUB_ENV"
-          echo "Selected Gradle version: $VERSION"
-
       - name: Set Up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: ${{ env.GRADLE_VERSION }}
+          gradle-version: "8.13"
 
       - name: Prepare Gradle Wrapper
         shell: bash
@@ -129,8 +108,22 @@ jobs:
             chmod +x ./gradlew
             echo "Existing Gradle wrapper found."
           else
-            echo "Generating Gradle wrapper."
-            gradle wrapper --gradle-version "$GRADLE_VERSION"
+            echo "gradlew missing. Generating wrapper..."
+
+            if [ -f "./gradle/wrapper/gradle-wrapper.properties" ]; then
+              VERSION=$(grep -oE 'gradle-[0-9]+\.[0-9]+(\.[0-9]+)?(-[a-zA-Z0-9.-]+)?-(bin|all)\.zip' \
+                ./gradle/wrapper/gradle-wrapper.properties \
+                | head -n 1 | sed -E 's/^gradle-//; s/-(bin|all)\.zip$//' || true)
+            else
+              VERSION=""
+            fi
+
+            if [ -z "${VERSION:-}" ]; then
+              VERSION="8.13"
+            fi
+
+            echo "Using Gradle version: $VERSION"
+            gradle wrapper --gradle-version "$VERSION"
             chmod +x ./gradlew
           fi
 
@@ -139,7 +132,6 @@ jobs:
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
           set -euo pipefail
-
           ./gradlew assembleDebug --no-daemon
 
       - name: Upload APK
