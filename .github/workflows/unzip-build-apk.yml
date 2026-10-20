@@ -15,11 +15,9 @@ jobs:
       ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
 
     steps:
-      # 1. Checkout repository
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      # 2. Extract ZIP
       - name: Extract Android Project ZIP
         shell: bash
         run: |
@@ -28,7 +26,7 @@ jobs:
           ZIP_FILE=$(find . -maxdepth 1 -type f -name "*.zip" | head -n 1)
 
           if [ -z "$ZIP_FILE" ]; then
-            echo "ERROR: No ZIP file found in repository root."
+            echo "ERROR: ZIP file not found in repository root."
             exit 1
           fi
 
@@ -36,9 +34,7 @@ jobs:
           unzip -oq "$ZIP_FILE" -d extracted
 
           echo "ZIP extracted successfully."
-          find extracted -maxdepth 3 -type f | head -100
 
-      # 3. Locate Android project
       - name: Locate Android Project
         shell: bash
         run: |
@@ -62,52 +58,68 @@ jobs:
           fi
 
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-          echo "Android project: $PROJECT_DIR"
+          echo "Project found: $PROJECT_DIR"
 
-      # 4. Install Java
-      - name: Set Up JDK
+      - name: Set Up JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
-      # 5. Setup Android SDK
       - name: Set Up Android SDK
         uses: android-actions/setup-android@v3
         with:
           cmdline-tools-version: 12266719
 
-      # 6. Install Android SDK packages
       - name: Install Android SDK Packages
         shell: bash
         run: |
           set -euo pipefail
 
-          sdkmanager --sdk_root="$ANDROID_HOME" \
+          SDKMANAGER=$(find "$ANDROID_HOME/cmdline-tools" \
+            -type f -name sdkmanager | head -n 1)
+
+          if [ -z "$SDKMANAGER" ]; then
+            echo "ERROR: sdkmanager not found."
+            exit 1
+          fi
+
+          yes | "$SDKMANAGER" \
+            --sdk_root="$ANDROID_HOME" --licenses || true
+
+          "$SDKMANAGER" --sdk_root="$ANDROID_HOME" \
             "platform-tools" \
             "platforms;android-35" \
             "build-tools;35.0.0"
 
-          yes | sdkmanager --sdk_root="$ANDROID_HOME" --licenses || true
-
-      # 7. Detect Gradle version
-      - name: Detect Gradle Configuration
+      - name: Detect Gradle Version
         shell: bash
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
           set -euo pipefail
 
-          echo "Checking Android Gradle Plugin configuration..."
+          VERSION=""
 
-          grep -R -n -E \
-            'com\.android\.application|com\.android\.tools\.build:gradle|distributionUrl' \
-            --include="*.gradle" \
-            --include="*.gradle.kts" \
-            --include="gradle-wrapper.properties" \
-            . || true
+          if [ -f "gradle/wrapper/gradle-wrapper.properties" ]; then
+            VERSION=$(grep -oE 'gradle-[0-9]+\.[0-9]+(\.[0-9]+)?(-[a-zA-Z0-9.-]+)?-(bin|all)\.zip' \
+              gradle/wrapper/gradle-wrapper.properties \
+              | head -n 1 | sed -E 's/^gradle-//; s/-(bin|all)\.zip$//' || true)
+          fi
 
-      # 8. Build APK
-      - name: Build Debug APK
+          if [ -z "$VERSION" ]; then
+            VERSION="8.13"
+            echo "No wrapper version found; using Gradle $VERSION."
+          fi
+
+          echo "GRADLE_VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "Selected Gradle version: $VERSION"
+
+      - name: Set Up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: ${{ env.GRADLE_VERSION }}
+
+      - name: Prepare Gradle Wrapper
         shell: bash
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
@@ -115,38 +127,22 @@ jobs:
 
           if [ -f "./gradlew" ]; then
             chmod +x ./gradlew
-            ./gradlew assembleDebug --no-daemon
-          elif [ -f "./gradle/wrapper/gradle-wrapper.properties" ]; then
-            echo "Wrapper properties exist, but gradlew script is missing."
-            echo "Cannot safely generate a wrapper without knowing the project's required Gradle version."
-            exit 1
+            echo "Existing Gradle wrapper found."
           else
-            echo "No Gradle wrapper found."
-            echo "Using Gradle 8.13 as a fallback."
-            gradle --version
-            gradle assembleDebug --no-daemon
+            echo "Generating Gradle wrapper."
+            gradle wrapper --gradle-version "$GRADLE_VERSION"
+            chmod +x ./gradlew
           fi
 
-      # 9. Verify APK
-      - name: Verify APK
+      - name: Build Debug APK
         shell: bash
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
           set -euo pipefail
 
-          APK=$(find app/build/outputs/apk/debug \
-            -type f -name "*.apk" 2>/dev/null | head -n 1 || true)
+          ./gradlew assembleDebug --no-daemon
 
-          if [ -z "$APK" ]; then
-            echo "ERROR: APK was not generated."
-            exit 1
-          fi
-
-          echo "APK generated successfully: $APK"
-          ls -lh "$APK"
-
-      # 10. Upload APK
-      - name: Upload APK Artifact
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: Mega-SMM-India-APK
